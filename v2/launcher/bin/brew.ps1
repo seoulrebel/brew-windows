@@ -840,7 +840,34 @@ function Install-HomebrewComponent {
         }
     }
 
+    # Installed taps live inside the runtime checkout (Library\Taps), so
+    # replacing runtime\homebrew would delete them - forcing a multi-GB
+    # re-clone of homebrew/core on every update. Move them aside before the
+    # swap and restore afterwards. They are parked under Temp (not the staging
+    # dir) because Install-Runtime deletes the stage in its finally block, even
+    # on failure.
+    $liveTaps = Join-Path $Prefix "runtime\homebrew\Library\Taps"
+    $tapsPreserveDir = Join-Path $Prefix ("Temp\taps-preserve-" + [Guid]::NewGuid().ToString("N"))
+    $tapsPreserved = $false
+    if (Test-Path -LiteralPath $liveTaps -PathType Container) {
+        Assert-PathUnderPrefix -Path $tapsPreserveDir -Prefix $Prefix
+        New-BrewDirectory -Path (Split-Path -Parent $tapsPreserveDir)
+        Move-RuntimeItem -LiteralSource $liveTaps -LiteralDestination $tapsPreserveDir
+        $tapsPreserved = $true
+        Write-RuntimeLogEntry -LogPath $LogPath -Component "homebrew" -State "TAPS_PRESERVED" -Details ("path={0}" -f $liveTaps)
+    }
+
     Install-RuntimeComponentSwap -Prefix $Prefix -ComponentName "homebrew" -StagedSource $cloneDir -LogPath $LogPath
+
+    if ($tapsPreserved) {
+        $restoredTaps = Join-Path $Prefix "runtime\homebrew\Library\Taps"
+        New-BrewDirectory -Path (Split-Path -Parent $restoredTaps)
+        if (Test-Path -LiteralPath $restoredTaps -PathType Container) {
+            Remove-RuntimePath -Path $restoredTaps -Prefix $Prefix
+        }
+        Move-RuntimeItem -LiteralSource $tapsPreserveDir -LiteralDestination $restoredTaps
+        Write-RuntimeLogEntry -LogPath $LogPath -Component "homebrew" -State "TAPS_RESTORED" -Details ("path={0}" -f $restoredTaps)
+    }
 
     # The swap (Move-Item of the staging tree) can lose files on very deep
     # paths under certain Windows conditions. Recover by re-checking-out
